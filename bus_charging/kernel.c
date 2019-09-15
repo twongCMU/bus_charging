@@ -9,30 +9,28 @@ extern "C" {
   __global__ void run_approximation(struct route_stop_s *route_data,
 				    unsigned int *stop_data,
 				    curandState_t* rand_states,
-				    float* final_utilitie_ret,
+				    float* final_utility_ret,
 				    unsigned int *stops_with_chargers_ret) {
-
-    int tidx = threadIdx.x + blockIdx.x * blockDim.x;
-    
-    // this costs 7-10 registers, but it is probably worth it to not have to hit main memory
-    curandState_t s = rand_states[tidx];
 
     __shared__ unsigned int stops_with_chargers[NUM_STOPS_INTS];
     __shared__ float permutation_utilities[32];
     
-    float sa_threshold = SA_THRESHOLD_INITIAL;
+    int tidx = threadIdx.x + blockIdx.x * blockDim.x;
+
+    float annealing_threshold = SA_THRESHOLD_INITIAL;
+    
+    // this costs 7-10 registers, but it is probably worth it to not have to hit main memory
+    curandState_t s = rand_states[tidx];
 
     // copy the initial charger arrangement
     if (threadIdx.x == 0) {
-      for (int j = 0; j < NUM_STOP_INTS; j++) {
-	stops_with_chargers[j] = stops_with_chargers_ret[blockIdx.x * NUM_STOP_INTS + j];
+      for (int j = 0; j < NUM_STOPS_INTS; j++) {
+	stops_with_chargers[j] = stops_with_chargers_ret[blockIdx.x * NUM_STOPS_INTS + j];
       }
     }
 	
-    unsigned int previous_welfare = 0;
+    unsigned int previous_utility = 0;
     for (int rounds = 0; rounds < ROUNDS; rounds++) {
-      unsigned int best_welfare = 0;
-      
       // assume 1 permutation per thread to keep code simple
 
 
@@ -44,6 +42,7 @@ extern "C" {
       */
       unsigned int stop_id_to_move = NUM_STOPS;
       unsigned int charger_offset = curand(&s) % NUM_CHARGERS;
+      unsigned int charger_offset_start = charger_offset;
       for (int i = 0; i < NUM_STOPS; i++) {
 	if ((stops_with_chargers[(int)i/32] >> ((int)i%32)) & 0x1 == 1U) {
 	  if (charger_offset == 0){
@@ -54,22 +53,22 @@ extern "C" {
 	}
       }
       if (stop_id_to_move == NUM_STOPS) {
-	printf("ERROR: in selecting random charger, failed to find a stop_id_to_move\n");
-	exit(0);
+	printf("ERROR: in selecting random charger, failed to find a stop_id_to_move offset is %u started as %u round %u\n", charger_offset, charger_offset_start, rounds);
       }
 
       unsigned int route_offset = curand(&s) % stops_lengths[stop_id_to_move];
       // in the stop_data, the uint packs the route_id in the upper 16 bits and the stop index into the lower 16
-      unsigned int route_id_to_move = stop_data[route_offset];
+      unsigned int route_id_to_move = stop_data[(stop_id_to_move*LONGEST_STOPS) + route_offset];
+      
       unsigned int route_id_to_move_index = route_id_to_move & ((1<<16)-1);
       route_id_to_move = (route_id_to_move >> 16) & ((1<<16)-1);
-	  
+      //printf("route_id_to_move %u for stop_id %u route index %u\n", route_id_to_move, stop_id_to_move, route_id_to_move_index);
       // move it in this direction - 0 = forward, 1 = backward
       unsigned int charger_move_direction = curand(&s) % 2;
 
       if (charger_move_direction == 0) { // move forward
 	// if we were at the end of the route list, wrap around to the first stop on the route
-	if (route_id_to_move_index == route_lengths[route_id_to_move]-1) {
+	if (route_id_to_move_index == routes_lengths[route_id_to_move]-1) {
 	  route_id_to_move_index = 0;
 	}
 	// otherwise move forward to the next stop
@@ -80,7 +79,7 @@ extern "C" {
       else {// move backwards
 	// if we were at the beginning of the route list, wrap around to the last stop on the route
 	if (route_id_to_move_index == 0) {
-	  route_id_to_move_index = route_lengths[route_id_to_move]-1;
+	  route_id_to_move_index = routes_lengths[route_id_to_move]-1;
 	}
 	// otherwise move forward to the next stop
 	else {
@@ -88,7 +87,7 @@ extern "C" {
 	}
       }
       
-      unsigned int new_charger_stop_id = route_data[route_id_to_move][route_id_to_move_index].station_id;
+      unsigned int new_charger_stop_id = route_data[(route_id_to_move* LONGEST_ROUTE) +route_id_to_move_index].station_id;
       // At this point we know we're moving a charger from stop_id_to_move to new_charger_stop_id
 
 
@@ -105,10 +104,10 @@ extern "C" {
 	float charge_required = 0.0f;
 	for (int stop_offset = 0; stop_offset < routes_lengths[route_id]; stop_offset++) {
 	  // deduct the energy we use driving to the next stop
-	  charge_actual -= ENERGY_USED_PER_KM * route_data[route_id][stop_offset].distance_m;
-	  charge_required += ENERGY_USED_PER_KM * route_data[route_id][stop_offset].distance_m;
+	  charge_actual -= ENERGY_USED_PER_KM * route_data[(route_id* sizeof(route_stop_s)*LONGEST_ROUTE) +stop_offset].distance_m/1000.0;
+	  charge_required += ENERGY_USED_PER_KM * route_data[(route_id* sizeof(route_stop_s)*LONGEST_ROUTE) +stop_offset].distance_m/1000.0;
 	  
-	  unsigned int this_station_id = route_data[route_id][stop_offset].station_id;
+	  unsigned int this_station_id = route_data[(route_id* sizeof(route_stop_s)*LONGEST_ROUTE) +stop_offset].station_id;
 
 	  // if we moved the station here we can charge OR
 	  // if we didn't move the station away from this location and there is a charger here, also charge	  
@@ -133,6 +132,7 @@ extern "C" {
 	  // the utility for this configuration is the % of charge we have left after doing a loop
 	  total_utility += charge_actual/charge_required;
 	}
+	//printf("Utility after this round was %f %f %f\n", total_utility, charge_actual, charge_required);
       }
 
       // the total utility is the average of all the route utilities
@@ -158,14 +158,15 @@ extern "C" {
       if (best_utility > previous_utility || best_utility > annealing_threshold) {
 	if (threadIdx.x == best_index) {
 	  // the winning thread updates stops_with_chargers by removing the bit from stop_id_to_move and setting it on new_charger_stop_id
+	  //printf("moving from stop %u to %u (index %u) along route %u\n", stop_id_to_move, new_charger_stop_id, route_id_to_move_index,route_id_to_move);
 	  stops_with_chargers[(int)stop_id_to_move/32] &= (~(0x1<<((int)stop_id_to_move%32)));
-	  stops_with_chargers[(int)new_charger_stop_id/32] &= (0x1<<((int)new_charger_stop_id%32));
+	  stops_with_chargers[(int)new_charger_stop_id/32] |= (0x1<<((int)new_charger_stop_id%32));
 	  previous_utility = best_utility;
 	}
       }
 
       // update annealing info
-      if (rounds % ANNEALING_COOLING_FREQUENCY == 0) {
+      if ((rounds % ANNEALING_COOLING_FREQUENCY) == 0) {
 	annealing_threshold += ANNEALING_COOLING_STEP;
       }
       if (annealing_threshold > 1.0) {
@@ -178,19 +179,19 @@ extern "C" {
     } // done with rounds
 
     // find which permutation had the best final utility and save it
-    unsigned int best_utility = 0;
+    float best_utility = 0;
     if (threadIdx.x == 0) {
       for (int i = 0; i < 32; i++) {
 	if (permutation_utilities[i] > best_utility) {
 	  best_utility = permutation_utilities[i];
 	}
       }
-      
-      final_utility_ret[blockIdx.x] = best_utility;
 
+      final_utility_ret[blockIdx.x] = best_utility;
+      
       // copy the best charger arrangement
-      for (int j = 0; j < NUM_STOP_INTS; j++) {
-	stops_with_chargers_ret[blockIdx.x * NUM_STOP_INTS + j] = stops_with_chargers[j];
+      for (int j = 0; j < NUM_STOPS_INTS; j++) {
+	stops_with_chargers_ret[blockIdx.x * NUM_STOPS_INTS + j] = stops_with_chargers[j];
       }
     }
 

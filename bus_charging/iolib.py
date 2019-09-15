@@ -23,9 +23,10 @@ class ioInput:
     #    return self._meters
     
 class ioInputJSON(ioInput):
-    def __init__(self, filename):
+    def __init__(self):
         super().__init__()
 
+    def addFile(self, filename):
         with open(filename) as json_file:
             json_data = json.load(json_file)
 
