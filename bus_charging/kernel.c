@@ -105,7 +105,10 @@ extern "C" {
       // if it is less, that means we used some % of the battery we had brought with us. The % we have left
       // is the utility, so if we have 90% charge left, our utility is 0.90. If we have 10% of our battery
       // left, that's low utility, so 0.10
-      float total_utility = 0.0f;
+      // the total utility for all routes is the minimum utility of all of the routes
+      // if we took the average, some good routes would overshadow a bad one
+      // this is especially true since utility grows faster with chargers for shorter routes due to the way we calculate it
+      float total_utility = 1.0f;
       for (int route_id = 0; route_id < NUM_ROUTES; route_id++) {
 	float charge_actual = 0.0f;
 	float charge_required = 0.0f;
@@ -129,24 +132,28 @@ extern "C" {
 	// we assume the bus started its route with exactly enough power to finish the route
 	charge_actual += charge_required;
 	if (charge_actual < 0.0) { // I think this is actually impossible. How can a bus use more energy than a loop required. Keep this for floating point weirdness
-	  continue; // add 0 to total_utility
+	  if (total_utility > 0.0) {
+	    total_utility = 0.0;
+	  }
 	}
 	else if (charge_actual >= charge_required) {
 	  // if we didn't lose charge after driving around, that's maximum utility because we'll never run out
-	  total_utility += 1.0;
+	  if (total_utility > 1.0) {
+	      total_utility = 1.0;
+	    }
 	}
 	else {
 	  // if we're here, charge_actual is >=0 and < charge_required
 	  // the utility for this configuration is the % of charge we have left after doing a loop
-	  total_utility += charge_actual/charge_required;
+	  if (total_utility > charge_actual/charge_required) {
+	    total_utility = charge_actual/charge_required;
+	  }
 	}
 	//printf("Utility after this round was %f %f %f round %u thread %u run %u for route %u saw %u chargers\n", total_utility, charge_actual, charge_required, rounds, threadIdx.x, blockIdx.x, route_id, chargers_seen);
       }
 
-      // the total utility is the average of all the route utilities
-      total_utility /= NUM_ROUTES;
 
-
+      
       // store the utility in shared memory so we can pick the best one
       permutation_utilities[threadIdx.x] = total_utility;
 
