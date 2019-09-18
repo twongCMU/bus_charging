@@ -26,7 +26,7 @@ args = parser.parse_args()
 NUM_CHARGERS = args.num_chargers
 
 NUM_RUNS_PER_BLOCK = 1
-NUM_RUNS = 100
+NUM_RUNS = 1000
 NUM_ROUNDS = 1000
 NUM_PERMUTATIONS = 32
 
@@ -203,27 +203,29 @@ cuda.memcpy_dtoh(final_chargers_np, final_chargers_gpu)
 
 max_utility = 0.0
 max_utility_i = -1
-"""
+
 for utility_i, utility in enumerate(final_utilities_np):
     if utility > max_utility:
         max_utility = utility
         max_utility_i = utility_i
 
-for r in range(0, NUM_RUNS):
-    for i in range(0, NUM_STOPS):
-        if ((final_chargers_np[r][int(i/32)] >> (i%32)) & 0x1) == 1:
-            sys.stdout.write(str(i) + "  ")
-    sys.stdout.write("  with utility " + str(final_utilities_np[r]))
-    print("")
+
+chargers_list = {}
+for i in range(0, NUM_STOPS):
+    if ((final_chargers_np[max_utility_i][int(i/32)] >> (i%32)) & 0x1) == 1:
+        sys.stdout.write(str(i) + "  ")
+        chargers_list[i] = 1
+sys.stdout.write("  with utility " + str(final_utilities_np[r]))
+print("")
 print("Routes:")
 for index, r in enumerate(routes_np):
     for i in range(0, routes_lengths_np[index]):
         sys.stdout.write(str(routes_np[index][i]["station_id"]))
-        #if routes_np[index][i]["station_id"] in chargers_list:
-        #    sys.stdout.write("*")
+        if routes_np[index][i]["station_id"] in chargers_list:
+            sys.stdout.write("*")
         sys.stdout.write("  ")
     print("\n")
-"""
+
 print("Runs: %d" % (len(final_utilities_np)))
 print("Rounds: %d" % (NUM_ROUNDS))
 print("Utility Max: %f" % (max(final_utilities_np)))

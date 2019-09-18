@@ -170,7 +170,7 @@ extern "C" {
       }
 
       // if this utility is higher than before or it is better than the threshold, keep it
-      if (best_utility > previous_utility || best_utility > annealing_threshold) {
+      if (best_utility > previous_utility || (best_utility/previous_utility) > annealing_threshold) {
 	if (threadIdx.x == best_index) {
 	  // the winning thread updates stops_with_chargers by removing the bit from stop_id_to_move and setting it on new_charger_stop_id
 	  //printf("moving from stop %u to %u (index %u) along route %u for round %u\n", stop_id_to_move, new_charger_stop_id, route_id_to_move_index,route_id_to_move, rounds);
