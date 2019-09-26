@@ -23,7 +23,7 @@ extern "C" {
     // this costs 7-10 registers, but it is probably worth it to not have to hit main memory
     curandState_t s = rand_states[tidx];
 
-    // copy the initial charger arrangement
+    // copy the initial charger arrangement into shared memory for performance
     if (threadIdx.x == 0) {
       for (int j = 0; j < NUM_STOPS_INTS; j++) {
 	stops_with_chargers[j] = stops_with_chargers_ret[blockIdx.x * NUM_STOPS_INTS + j];
@@ -67,27 +67,7 @@ extern "C" {
       // move it in this direction - 0 = forward, 1 = backward
       int charger_move_direction = ((curand(&s) % 2) == 0 ? 1 : -1);
 
-      /*
-      int keep_moving = 1;
-      unsigned int new_charger_stop_id = 0;
-      while (keep_moving > 0) {
-	route_id_to_move_index += charger_move_direction;
-	// if we are at the end of the route list, wrap around to the first stop on the route
-	if (route_id_to_move_index == routes_lengths[route_id_to_move]) {
-	  route_id_to_move_index = 0;
-	}
-	// if we went past the beginning of the route list, wrap around to the last stop on the route
-	if (route_id_to_move_index < 0) {
-	  route_id_to_move_index = routes_lengths[route_id_to_move]-1;
-	}
-	// if we want to move the charger to a stop that already has a charger, move it again
-	// it is kind of expensive to do this in GPU but it should be rare, and I'd rather get a permutation
-	// that's useful than do nothig
-	new_charger_stop_id = route_data[(route_id_to_move* LONGEST_ROUTE) +route_id_to_move_index].station_id;
-	keep_moving = ((stops_with_chargers[(int)new_charger_stop_id/32] >> ((int)new_charger_stop_id%32)) & 0x1);
-      }
-      */
-      
+      // pick a new location for one charger and keep picking until we have a location without a charger
       int keep_moving  = 1;
       unsigned int new_charger_stop_id = 0;
       while (keep_moving > 0) {
@@ -95,6 +75,7 @@ extern "C" {
 	keep_moving = ((stops_with_chargers[(int)new_charger_stop_id/32] >> ((int)new_charger_stop_id%32)) & 0x1);
 	//printf("Keep moving %u for stop id %u thread %u\n", keep_moving, new_charger_stop_id, threadIdx.x);
       }
+      
       // At this point we know we're moving a charger from stop_id_to_move to new_charger_stop_id
 
 
