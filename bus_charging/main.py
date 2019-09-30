@@ -28,7 +28,7 @@ args = parser.parse_args()
 NUM_CHARGERS = args.num_chargers
 
 NUM_RUNS_PER_BLOCK = 1
-NUM_RUNS = 1000
+NUM_RUNS = 100
 NUM_ROUNDS = 1000
 NUM_PERMUTATIONS = 32
 
@@ -176,9 +176,12 @@ defines = "#define NUM_ROUTES " + str(NUM_ROUTES) + "\n" +\
           "#define LONGEST_STOPS " + str(LONGEST_STOPS) + "\n"
 
 if args.optimal:
-    NUM_THREADS = NUM_RUNS * NUM_PERMUTATIONS
-    TOTAL_WORK = int(scipy.special.comb(NUM_STOPS, NUM_CHARGERS))
+    NUM_THREADS = NUM_RUNS * 32
+    TOTAL_WORK = scipy.special.comb(NUM_STOPS, NUM_CHARGERS, exact=True)
 
+    # if the total work is more than fits in a 32 bit int then the code will get confused generating the initial assignments
+    assert TOTAL_WORK < 4294967296
+    
     # N-1 threads do equal amounts of work. We'll take the floor of that value
     # then the Nth thread does the remainder
     NUM_WORK_PER_THREAD = int(math.floor(TOTAL_WORK/(NUM_THREADS-1)))
@@ -188,15 +191,22 @@ if args.optimal:
     # offset so that the amount of work is equal. This means we'll repeat some work
     # that other threads did, but it's better than having to special if-case everything
     # due to SIMD semantics
-    LAST_THREAD_START_OFFSET = TOTAL_WORK - NUM_WORK_LAST_THREAD
+    LAST_THREAD_START_OFFSET = TOTAL_WORK - NUM_WORK_PER_THREAD
     
     defines += "#define NUM_THREADS " + str(NUM_THREADS) + "\n" +\
-               "#define NUM_RUNS " + str(NUM_RUNS) + "\n" +\
                "#define NUM_WORK_PER_THREAD " + str(NUM_WORK_PER_THREAD) + "\n" +\
                "#define LAST_THREAD_START_OFFSET " + str(LAST_THREAD_START_OFFSET) + "\n"
                
+    print("total work %u work per thread %u num work last thread %u, last thread offset %u"%(TOTAL_WORK, NUM_WORK_PER_THREAD, NUM_WORK_LAST_THREAD, LAST_THREAD_START_OFFSET))
+
+    # not sure what to do if this assert fails but it means the last thread is not doing enough work to make up for the remainders lost in rounding NUM_WORK_PER_THREAD
+    assert NUM_WORK_PER_THREAD > NUM_WORK_LAST_THREAD
+
+else:
+    defines += "#define NUM_THREADS " + str(0) + "\n" +\
+               "#define NUM_WORK_PER_THREAD " + str(0) + "\n" +\
+               "#define LAST_THREAD_START_OFFSET " + str(0) + "\n"
     
-          
 mod = SourceModule(preamble + defines + kernel_approx_src, no_extern_c=True)
 
 (routes_lengths_gpu, size_in_bytes) = mod.get_global("routes_lengths")

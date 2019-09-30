@@ -78,22 +78,28 @@ extern "C" {
       float charge_actual = 0.0f;
       float charge_required = 0.0f;
       unsigned int chargers_seen = 0;
+
       for (int stop_offset = 0; stop_offset < routes_lengths[route_id]; stop_offset++) {
 	// deduct the energy we use driving to the next stop
 	charge_actual -= ENERGY_USED_PER_KM * route_data[(route_id *LONGEST_ROUTE) +stop_offset].distance_m/1000.0;
 	charge_required += ENERGY_USED_PER_KM * route_data[(route_id *LONGEST_ROUTE) +stop_offset].distance_m/1000.0;
 	
 	unsigned int this_station_id = route_data[(route_id* LONGEST_ROUTE) +stop_offset].station_id;
-	
+
+      	
 	// if we moved the station here we can charge OR
 	// if we didn't move the station away from this location and there is a charger here, also charge	  
 	if (this_station_id == new_charger_stop_id ||
 	    (this_station_id != stop_id_to_move && (stops_with_chargers[(int)this_station_id/32] >> ((int)this_station_id%32)) & 0x1 == 1U)) { 
 	  charge_actual += ENERGY_CHARGE_PER_MINUTE * STOP_WAIT_MINUTES;
+	  
+	  //if (threadIdx.x==0 && blockIdx.x==0) {
+	    //printf("saw charger at stop id %u\n", this_station_id);
+	    //}
 	  chargers_seen++;
 	}
       }
-      
+
       // we assume the bus started its route with exactly enough power to finish the route
       charge_actual += charge_required;
       if (charge_actual < 0.0) { // I think this is actually impossible. How can a bus use more energy than a loop required. Keep this for floating point weirdness
@@ -114,8 +120,12 @@ extern "C" {
 	  total_utility = charge_actual/charge_required;
 	}
       }
-      //printf("Utility after this round was %f %f %f round %u thread %u run %u for route %u saw %u chargers\n", total_utility, charge_actual, charge_required, rounds, threadIdx.x, blockIdx.x, route_id, chargers_seen);
+      /*
+      if (threadIdx.x==0 && blockIdx.x==0) {
+	printf("Utility after this round was %f %f %f  thread %u run %u for route %u saw %u chargers\n", total_utility, charge_actual, charge_required, threadIdx.x, blockIdx.x, route_id, chargers_seen);
+	}*/
     }
+
     return total_utility;
   }
   
@@ -205,42 +215,69 @@ extern "C" {
     rand_states[tidx] = s;
   }
 
-  __device__ void increment_charger_list(unsigned int *charger_at_stop,
+  __device__ void increment_charger_list(unsigned int *charger_permutation_counter,
 					 unsigned int *stops_with_chargers){
 
-    for (int i = NUM_CHARGERS - 1; i >= 0; i--) {
+    int i;
+    for (i = NUM_CHARGERS - 1; i >= 0; i--) {
       // clear the old charger at stops_with_chargers[i]
-      stops_with_chargers[(int)charger_at_stop[i]/32] &= (~(0x1<<((int)charger_at_stop[i]%32)));
+      stops_with_chargers[(int)charger_permutation_counter[i]/32] &= (~(0x1<<((int)charger_permutation_counter[i]%32)));
 
       // move the charger at stops_with_chargers[i] to the next one
-      charger_at_stop[i]++;
-      // if this is legal, then we're done
-      if (charger_at_stop[i] < NUM_CHARGERS - (NUM_CHARGERS - i)) {
-	stops_with_chargers[(int)charger_at_stop[i]/32] |= (0x1<<((int)charger_at_stop[i]%32));
-	return;
+      charger_permutation_counter[i]++;
+      // if this is legal, then we're done. If not continue the loop to the next charger
+      if (charger_permutation_counter[i] < NUM_STOPS - (NUM_CHARGERS -1 - i)) {
+	break;
       }
-      // if it wasn't legal, then we need to increment charger_at_stop[i-i]
-      // so here we reset charger_at_stop[i] to the start of the loop which is 1 more than what
-      // charger_at_stop[i-1] _will_ be after we increment it (hence +2)
-      charger_at_stop[i] = charger_at_stop[i-1]+2;
-      stops_with_chargers[(int)charger_at_stop[i]/32] |= (0x1<<((int)charger_at_stop[i]%32));
+    }
+
+    stops_with_chargers[(int)charger_permutation_counter[i]/32] |= (0x1<<((int)charger_permutation_counter[i]%32));
+    // then walk back to the right of the charger array and update them
+    for (i = i+1; i < NUM_CHARGERS; i++) {
+      charger_permutation_counter[i] = charger_permutation_counter[i-1]+1;
+      stops_with_chargers[(int)charger_permutation_counter[i]/32] |= (0x1<<((int)charger_permutation_counter[i]%32));
     }
   }
 
 
-  __device__ void increment_charger_list_initial(unsigned int *charger_at_stop,
+  __device__ void increment_charger_list_initial(unsigned int *charger_permutation_counter,
 					 unsigned int *stops_with_chargers){
 
-    for (int i = NUM_CHARGERS - 1; i >= 0; i--) {
-      // move the charger at stops_with_chargers[i] to the next one
-      charger_at_stop[i]++;
-      // if this is legal, then we're done
-      if (charger_at_stop[i] < NUM_CHARGERS - (NUM_CHARGERS - i)) {
-	return;
+    /*
+    if (threadIdx.x == 29) {
+      printf("incrementing (num stops %u num chargers %u:", NUM_STOPS, NUM_CHARGERS);
+      for (int i = 0 ;i <NUM_CHARGERS; i++) {
+	printf("[%u]",charger_permutation_counter[i]);
       }
-      // if it wasn't legal, then we need to increment charger_at_stop[i-i]
-      charger_at_stop[i] = charger_at_stop[i-1]+2;
+      printf("\n");
     }
+    */
+    int i;
+    // find the leftmost charger in the array that needs to be incremented
+    for (i = NUM_CHARGERS - 1; i >= 0; i--) {
+      // move the charger at stops_with_chargers[i] to the next one
+      charger_permutation_counter[i]++;
+
+      // if this is legal, then we're done
+      if (charger_permutation_counter[i] < NUM_STOPS - (NUM_CHARGERS - 1 - i)) {
+	break;
+      }
+    }
+
+    // then walk back to the right of the charger array and update them
+    for (i = i+1; i < NUM_CHARGERS; i++) {
+      charger_permutation_counter[i] = charger_permutation_counter[i-1]+1;
+    }
+    
+    /*
+    if (threadIdx.x == 29) {
+      printf("now :");
+      for (int i = 0; i <NUM_CHARGERS; i++) {
+	printf("[%u]",charger_permutation_counter[i]);
+      }
+      printf("\n");
+    }
+    */
   }
 
   __global__ void run_brute_force(struct route_stop_s *route_data,
@@ -251,66 +288,81 @@ extern "C" {
     
     unsigned int stops_with_chargers[NUM_STOPS_INTS];
     unsigned int stops_with_chargers_best[NUM_STOPS_INTS];
-    unsigned int charger_at_stop[NUM_CHARGERS];
+    unsigned int charger_permutation_counter[NUM_CHARGERS];
 
     for (int j = 0; j < NUM_STOPS_INTS; j++) {
       stops_with_chargers[j] = 0;
     }
-	  
+
+    for (int j = 0; j < NUM_CHARGERS; j++) {
+      charger_permutation_counter[j] = j;
+    }
+
+    
     unsigned int start_offset = NUM_WORK_PER_THREAD * (threadIdx.x + blockIdx.x * blockDim.x);
     if ((threadIdx.x + blockIdx.x * blockDim.x) == (NUM_THREADS-1)) {
       start_offset = LAST_THREAD_START_OFFSET;
     }
-
+    //printf("thread %u, start offset %u\n", threadIdx.x, start_offset);
     float best_utility = 0.0f;
-    
-    // set charger_at_stop to the first offset we will check
-    for (int i = 0; i < start_offset; i++) {
-      if (threadIdx.x ==0 && blockIdx.x == (NUM_RUNS-3) && i%100==0) {
-	printf("inc at %u out of %u\n", i, start_offset);
-      }
-      increment_charger_list_initial(charger_at_stop, stops_with_chargers);
-    }
-    /*
-    for (int i = 0; i < NUM_CHARGERS; i++) {
-      stops_with_chargers[(int)charger_at_stop[i]/32] |= (0x1<<((int)charger_at_stop[i]%32));
-      }*/
 
-    /*
-        
+    // set charger_permutation_counter to the first offset we will check
+    for (int i = 0; i < start_offset; i++) {
+      increment_charger_list_initial(charger_permutation_counter, stops_with_chargers);
+    }
+    
+    for (int i = 0; i < NUM_CHARGERS; i++) {
+      if (charger_permutation_counter[i] > NUM_STOPS) {
+	printf("ERROR, got charger ID %u with max %u for thread %u at i %u\n", charger_permutation_counter[i], NUM_STOPS, threadIdx.x, i);
+      }
+      stops_with_chargers[(int)charger_permutation_counter[i]/32] |= (0x1<<((int)charger_permutation_counter[i]%32));
+    }
+
+    
+
+
     for (int i = 0; i < NUM_WORK_PER_THREAD; i++) {
       // calculate_utility assumes we have a charging station move pending
       // but here we don't, so we fake one by saying we moved a station from
       // a station back to itself
       float utility = calculate_utility(route_data,
 					stops_with_chargers,
-					stops_with_chargers[0],
-					stops_with_chargers[0]);
+					NUM_STOPS+1,
+					NUM_STOPS+2);
+      
       if (utility > best_utility) {
 	best_utility = utility;
+       
 	for (int j = 0; j < NUM_STOPS_INTS; j++) {
 	  stops_with_chargers_best[j] = stops_with_chargers[j];
 	}	
       }
-      increment_charger_list(charger_at_stop, stops_with_chargers);
+      
+      increment_charger_list(charger_permutation_counter, stops_with_chargers);
     }
-    */
+    
     utilities[threadIdx.x] = best_utility;
-    int best_index = -1;
-    best_utility = 0.0f;
+    int best_index = 0;
+    best_utility = utilities[0];
     for (int i = 0; i < 32; i++) {
+      
+      //if (blockIdx.x==1 && threadIdx.x==0) {
+      //printf("Looking at idx %u utility %f, best so far %f at index %u\n", i, utilities[i], best_utility, best_index);
+	// }
+      
       if (utilities[i] > best_utility) {
 	best_utility = utilities[i];
 	best_index = i;
       }
     }
-    if (threadIdx.x == best_index) {
+    if (threadIdx.x == 0) {
+      printf("Winner is idx %u block %u utility %f\n", best_index, blockIdx.x, best_utility);
       final_utility_ret[blockIdx.x] = best_utility;
       for (int j = 0; j < NUM_STOPS_INTS; j++) {
 	stops_with_chargers_ret[blockIdx.x * NUM_STOPS_INTS + j] = stops_with_chargers_best[j];
       }
     } 
-      
+    
   }
 }
 
