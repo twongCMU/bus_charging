@@ -16,11 +16,13 @@ from pycuda.compiler import SourceModule
 from pycuda.curandom import rand as curand
 from pycuda import characterize
 from pycuda.tools import register_dtype
+import scipy.special
+import math
 
 parser = argparse.ArgumentParser(description='Scheduling EV Vehicles to Chargers Through Two-sided Iterative Auction')
 parser.add_argument('num_chargers', type=int, help='number of chargers to install')
 parser.add_argument('infile', nargs='+', help='json file with route information')
-
+parser.add_argument('--optimal', action='store_true', help='do brute force solution rather than approximation')
 args = parser.parse_args()
 
 NUM_CHARGERS = args.num_chargers
@@ -157,6 +159,8 @@ module = SourceModule(init_rng_src, no_extern_c=True)
 init_rng = module.get_function('init_rng')
 init_rng(np.int32(NUM_RUNS*32*NUM_RUNS_PER_BLOCK), rng_states_gpu, np.uint32(time.time()), np.uint64(0), block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
     
+
+
 defines = "#define NUM_ROUTES " + str(NUM_ROUTES) + "\n" +\
           "#define NUM_STOPS " + str(NUM_STOPS) + "\n" +\
           "#define NUM_STOPS_INTS " + str(NUM_CHARGER_INTS) + "\n" +\
@@ -170,6 +174,28 @@ defines = "#define NUM_ROUTES " + str(NUM_ROUTES) + "\n" +\
           "#define ANNEALING_COOLING_STEP " + str(ANNEALING_COOLING_STEP) + "\n" +\
           "#define LONGEST_ROUTE " + str(LONGEST_ROUTE) + "\n" +\
           "#define LONGEST_STOPS " + str(LONGEST_STOPS) + "\n"
+
+if args.optimal:
+    NUM_THREADS = NUM_RUNS * NUM_PERMUTATIONS
+    TOTAL_WORK = int(scipy.special.comb(NUM_STOPS, NUM_CHARGERS))
+
+    # N-1 threads do equal amounts of work. We'll take the floor of that value
+    # then the Nth thread does the remainder
+    NUM_WORK_PER_THREAD = int(math.floor(TOTAL_WORK/(NUM_THREADS-1)))
+    NUM_WORK_LAST_THREAD = TOTAL_WORK - (NUM_WORK_PER_THREAD * (NUM_THREADS-1))
+
+    # it is easier to do the same amount of work in the last thread so we back up the
+    # offset so that the amount of work is equal. This means we'll repeat some work
+    # that other threads did, but it's better than having to special if-case everything
+    # due to SIMD semantics
+    LAST_THREAD_START_OFFSET = TOTAL_WORK - NUM_WORK_LAST_THREAD
+    
+    defines += "#define NUM_THREADS " + str(NUM_THREADS) + "\n" +\
+               "#define NUM_RUNS " + str(NUM_RUNS) + "\n" +\
+               "#define NUM_WORK_PER_THREAD " + str(NUM_WORK_PER_THREAD) + "\n" +\
+               "#define LAST_THREAD_START_OFFSET " + str(LAST_THREAD_START_OFFSET) + "\n"
+               
+    
           
 mod = SourceModule(preamble + defines + kernel_approx_src, no_extern_c=True)
 
@@ -192,9 +218,13 @@ final_chargers_np = np.zeros((NUM_RUNS, NUM_CHARGER_INTS), dtype=np.uint32)
 final_chargers_gpu = cuda.mem_alloc(final_chargers_np.nbytes)
 cuda.memcpy_htod(final_chargers_gpu, chargers_np)
 
-func = mod.get_function("run_approximation")
+if args.optimal:
+    func = mod.get_function("run_brute_force")
+    func(routes_gpu, stops_gpu, final_utilities_gpu, final_chargers_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
 
-func(routes_gpu, stops_gpu, rng_states_gpu, final_utilities_gpu, final_chargers_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
+else:
+    func = mod.get_function("run_approximation")
+    func(routes_gpu, stops_gpu, rng_states_gpu, final_utilities_gpu, final_chargers_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
 
 
 cuda.memcpy_dtoh(final_utilities_np, final_utilities_gpu)
