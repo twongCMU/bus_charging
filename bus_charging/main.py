@@ -28,7 +28,7 @@ args = parser.parse_args()
 NUM_CHARGERS = args.num_chargers
 
 NUM_RUNS_PER_BLOCK = 1
-NUM_RUNS = 100
+NUM_RUNS = 1000
 NUM_ROUNDS = 1000
 NUM_PERMUTATIONS = 32
 
@@ -179,13 +179,14 @@ if args.optimal:
     NUM_THREADS = NUM_RUNS * 32
     TOTAL_WORK = scipy.special.comb(NUM_STOPS, NUM_CHARGERS, exact=True)
 
+    print("Total work items: " + str(TOTAL_WORK))
     # if the total work is more than fits in a 32 bit int then the code will get confused generating the initial assignments
-    assert TOTAL_WORK < 4294967296
+    #assert TOTAL_WORK < 4294967296
     
     # N-1 threads do equal amounts of work. We'll take the floor of that value
     # then the Nth thread does the remainder
-    NUM_WORK_PER_THREAD = int(math.floor(TOTAL_WORK/(NUM_THREADS-1)))
-    NUM_WORK_LAST_THREAD = TOTAL_WORK - (NUM_WORK_PER_THREAD * (NUM_THREADS-1))
+    #NUM_WORK_PER_THREAD = int(math.floor(TOTAL_WORK/(NUM_THREADS-1)))
+    NUM_WORK_PER_THREAD = int(math.ceil(TOTAL_WORK/(NUM_THREADS)))
 
     # it is easier to do the same amount of work in the last thread so we back up the
     # offset so that the amount of work is equal. This means we'll repeat some work
@@ -194,16 +195,15 @@ if args.optimal:
     LAST_THREAD_START_OFFSET = TOTAL_WORK - NUM_WORK_PER_THREAD
     
     defines += "#define NUM_THREADS " + str(NUM_THREADS) + "\n" +\
+               "#define TOTAL_WORK " + str(TOTAL_WORK) + "ULL\n" +\
                "#define NUM_WORK_PER_THREAD " + str(NUM_WORK_PER_THREAD) + "\n" +\
-               "#define LAST_THREAD_START_OFFSET " + str(LAST_THREAD_START_OFFSET) + "\n"
+               "#define LAST_THREAD_START_OFFSET " + str(LAST_THREAD_START_OFFSET) + "ULL\n"
                
-    print("total work %u work per thread %u num work last thread %u, last thread offset %u"%(TOTAL_WORK, NUM_WORK_PER_THREAD, NUM_WORK_LAST_THREAD, LAST_THREAD_START_OFFSET))
-
-    # not sure what to do if this assert fails but it means the last thread is not doing enough work to make up for the remainders lost in rounding NUM_WORK_PER_THREAD
-    assert NUM_WORK_PER_THREAD > NUM_WORK_LAST_THREAD
+    print("total work %u work per thread %u last thread offset %u"%(TOTAL_WORK, NUM_WORK_PER_THREAD, LAST_THREAD_START_OFFSET))
 
 else:
-    defines += "#define NUM_THREADS " + str(0) + "\n" +\
+    defines += "#define NUM_THREADS " + str(999) + "\n" +\
+               "#define TOTAL_WORK " + str(0) + "\n" +\
                "#define NUM_WORK_PER_THREAD " + str(0) + "\n" +\
                "#define LAST_THREAD_START_OFFSET " + str(0) + "\n"
     
@@ -266,10 +266,15 @@ for index, r in enumerate(routes_np):
         sys.stdout.write("  ")
     print("\n")
 
-print("Runs: %d" % (len(final_utilities_np)))
-print("Rounds: %d" % (NUM_ROUNDS))
-print("Utility Max: %f" % (max(final_utilities_np)))
-print("Utility Min: %f" % (min(final_utilities_np)))
-print("Utility Avg: %f" % (np.mean(final_utilities_np)))
-print("Utility Median: %f" % (np.median(final_utilities_np)))
-print("Utility Stdev: %f" % (np.std(final_utilities_np)))
+
+if args.optimal:
+    print("Runs: %d" % (len(final_utilities_np)))
+    print("Utility Max: %f" % (max(final_utilities_np)))    
+else:
+    print("Runs: %d" % (len(final_utilities_np)))
+    print("Rounds: %d" % (NUM_ROUNDS))
+    print("Utility Max: %f" % (max(final_utilities_np)))
+    print("Utility Min: %f" % (min(final_utilities_np)))
+    print("Utility Avg: %f" % (np.mean(final_utilities_np)))
+    print("Utility Median: %f" % (np.median(final_utilities_np)))
+    print("Utility Stdev: %f" % (np.std(final_utilities_np)))

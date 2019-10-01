@@ -299,15 +299,16 @@ extern "C" {
     }
 
     
-    unsigned int start_offset = NUM_WORK_PER_THREAD * (threadIdx.x + blockIdx.x * blockDim.x);
-    if ((threadIdx.x + blockIdx.x * blockDim.x) == (NUM_THREADS-1)) {
+    unsigned long long start_offset = NUM_WORK_PER_THREAD * (threadIdx.x + blockIdx.x * blockDim.x);
+    if (start_offset + NUM_WORK_PER_THREAD > TOTAL_WORK) {
+      printf("INFO: Thread %u block %u start offset would exceed total work. Resetting\n", threadIdx.x, blockIdx.x);
       start_offset = LAST_THREAD_START_OFFSET;
     }
     //printf("thread %u, start offset %u\n", threadIdx.x, start_offset);
     float best_utility = 0.0f;
 
     // set charger_permutation_counter to the first offset we will check
-    for (int i = 0; i < start_offset; i++) {
+    for (unsigned long long i = 0; i < start_offset; i++) {
       increment_charger_list_initial(charger_permutation_counter, stops_with_chargers);
     }
     
@@ -317,9 +318,6 @@ extern "C" {
       }
       stops_with_chargers[(int)charger_permutation_counter[i]/32] |= (0x1<<((int)charger_permutation_counter[i]%32));
     }
-
-    
-
 
     for (int i = 0; i < NUM_WORK_PER_THREAD; i++) {
       // calculate_utility assumes we have a charging station move pending
@@ -337,31 +335,42 @@ extern "C" {
 	  stops_with_chargers_best[j] = stops_with_chargers[j];
 	}	
       }
-      
-      increment_charger_list(charger_permutation_counter, stops_with_chargers);
+
+      // on the last work item, don't bother incrementing since we won't check the result
+      // even worse, we'll stomp memory as the last thread tries to roll over and gets confused
+      if (i < NUM_WORK_PER_THREAD-1) {
+	increment_charger_list(charger_permutation_counter, stops_with_chargers);
+      }
     }
     
     utilities[threadIdx.x] = best_utility;
     int best_index = 0;
     best_utility = utilities[0];
+    
     for (int i = 0; i < 32; i++) {
-      
-      //if (blockIdx.x==1 && threadIdx.x==0) {
-      //printf("Looking at idx %u utility %f, best so far %f at index %u\n", i, utilities[i], best_utility, best_index);
-	// }
-      
+      /*
+      if (blockIdx.x==1 && threadIdx.x==0) {
+	printf("Looking at idx %u utility %f, best so far %f at index %u\n", i, utilities[i], best_utility, best_index);
+      }
+      */
       if (utilities[i] > best_utility) {
+
 	best_utility = utilities[i];
 	best_index = i;
+
+	//if (blockIdx.x==1 && threadIdx.x==0) {
+	// printf("at index %u doing update\n", i);
+	//}
+	
       }
     }
-    if (threadIdx.x == 0) {
-      printf("Winner is idx %u block %u utility %f\n", best_index, blockIdx.x, best_utility);
+    if (threadIdx.x == best_index) {
+      //printf("Winner is idx %u block %u utility %f\n", best_index, blockIdx.x, best_utility);
       final_utility_ret[blockIdx.x] = best_utility;
       for (int j = 0; j < NUM_STOPS_INTS; j++) {
 	stops_with_chargers_ret[blockIdx.x * NUM_STOPS_INTS + j] = stops_with_chargers_best[j];
       }
-    } 
+    }
     
   }
 }
