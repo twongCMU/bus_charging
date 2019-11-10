@@ -1,5 +1,7 @@
 #!/usr/bin/python3
 
+### Problem is generating the initial contract is inefficient
+# either we should do it in Python and store it in memory or we need a different way
 import argparse
 import numpy as np
 import time
@@ -18,7 +20,7 @@ from pycuda import characterize
 from pycuda.tools import register_dtype
 import scipy.special
 import math
-
+import json 
 parser = argparse.ArgumentParser(description='Scheduling EV Vehicles to Chargers Through Two-sided Iterative Auction')
 parser.add_argument('num_chargers', type=int, help='number of chargers to install')
 parser.add_argument('infile', nargs='+', help='json file with route information')
@@ -28,11 +30,18 @@ args = parser.parse_args()
 NUM_CHARGERS = args.num_chargers
 
 NUM_RUNS_PER_BLOCK = 1
-NUM_RUNS = 1000
-NUM_ROUNDS = 1000
+NUM_RUNS = 1
+NUM_ROUNDS = 100
 NUM_PERMUTATIONS = 32
 
+# 2kWh/km
+#https://www.sciencedirect.com/science/article/abs/pii/S0360544217301081
+#electric bus energy consumption is 1.24-2.48 kWh/km
 ENERGY_USED_PER_KM = 2
+
+#https://new.siemens.com/global/en/products/mobility/road-solutions/electromobility/ebus-charging.html
+#250kW to 600kW offboard charging  4.1666-10kw = 2-5km charging perminute
+#60kW to 120kW onboard
 ENERGY_CHARGE_PER_MINUTE = 5
 STOP_WAIT_MINUTES = 1
 
@@ -80,6 +89,7 @@ register_dtype(route_stop_dtype, "route_stop_s")
 routes_np = np.empty((NUM_ROUTES, LONGEST_ROUTE), dtype=route_stop_dtype)
 routes_lengths_np = np.empty((NUM_ROUTES), dtype=np.uint32)
 
+stopid_to_gps = {}
 global_stop_id = 0
 for r_index, r in enumerate(routes):
     routes_lengths_np[r_index] = len(r)
@@ -94,9 +104,13 @@ for r_index, r in enumerate(routes):
 
         routes_np[r_index][s_index]["station_id"] =  stops[gps]["global_stop_id"]
         routes_np[r_index][s_index]["distance_m"] =  s["distance_m"]
-print("XXX route lengths " + str(routes_lengths_np))
+print("Route lengths " + str(routes_lengths_np))
 NUM_STOPS = global_stop_id
 
+for gps in stops.keys():
+    stop_id = stops[gps]["global_stop_id"]
+    stopid_to_gps[stop_id] = gps
+    
 # the stop with the most number of routes crossing it
 LONGEST_STOPS = 0
 for s in stops.keys():    
@@ -160,7 +174,9 @@ init_rng = module.get_function('init_rng')
 init_rng(np.int32(NUM_RUNS*32*NUM_RUNS_PER_BLOCK), rng_states_gpu, np.uint32(time.time()), np.uint64(0), block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
     
 
-
+is_simiulation = 0
+if NUM_RUNS == 1:
+    is_simulation = 1
 defines = "#define NUM_ROUTES " + str(NUM_ROUTES) + "\n" +\
           "#define NUM_STOPS " + str(NUM_STOPS) + "\n" +\
           "#define NUM_STOPS_INTS " + str(NUM_CHARGER_INTS) + "\n" +\
@@ -173,7 +189,10 @@ defines = "#define NUM_ROUTES " + str(NUM_ROUTES) + "\n" +\
           "#define ANNEALING_COOLING_FREQUENCY " + str(ANNEALING_COOLING_FREQUENCY) + "\n" +\
           "#define ANNEALING_COOLING_STEP " + str(ANNEALING_COOLING_STEP) + "\n" +\
           "#define LONGEST_ROUTE " + str(LONGEST_ROUTE) + "\n" +\
-          "#define LONGEST_STOPS " + str(LONGEST_STOPS) + "\n"
+          "#define LONGEST_STOPS " + str(LONGEST_STOPS) + "\n" +\
+          "#define SIMULATION " + str(is_simulation) + "\n"
+
+initial_assignments = None
 
 if args.optimal:
     NUM_THREADS = NUM_RUNS * 32
@@ -201,6 +220,49 @@ if args.optimal:
                
     print("total work %u work per thread %u last thread offset %u"%(TOTAL_WORK, NUM_WORK_PER_THREAD, LAST_THREAD_START_OFFSET))
 
+    """
+    initial_assignments = np.zeros((NUM_THREADS, NUM_CHARGERS), dtype=np.uint32)
+
+    work_assigned = 0
+    current_assignments = np.zeros((NUM_CHARGERS), dtype=np.uint32)
+    for i in range(0, NUM_CHARGERS):
+        current_assignments[i] = i
+
+        
+    increment_desired = NUM_WORK_PER_THREAD
+    # for each thread, generate the offset it starts doing work at
+    for i in range(0, NUM_THREADS):
+        # save the assignments for this thread
+        initial_assignments[i] = current_assignments
+        print("XXX saving " + str(current_assignments) + " at thread " + str(i) + " assigned " + str(work_assigned))
+        work_assigned += increment_desired
+        
+        # if this is the last thread, we're done; don't bother incrementing the current_assignments
+        # it's actually dangerous to increment it 
+        if i == NUM_THREADS-1:
+            break
+
+        # if adding NUM_WORK_PER_THREAD will cause that thread to run over when it does its work
+        # adjust the amount we increment so that the remaining threads start from a point where
+        # doing NUM_WORK_PER_THREAD takes them exactly to the end
+        if work_assigned + (2*NUM_WORK_PER_THREAD) > TOTAL_WORK:
+            increment_desired = (TOTAL_WORK-NUM_WORK_PER_THREAD) - work_assigned
+            
+        # increment the current_assignments by increment_desired
+        for j in range(0, increment_desired):
+            farthest_index = NUM_CHARGERS+1
+            for k in range(NUM_CHARGERS-1, -1, -1):
+                current_assignments[k] += 1
+                farthest_index = k
+                if current_assignments[k] < NUM_STOPS- (NUM_CHARGERS - 1 - k):
+                    break
+
+            for k in range(farthest_index+1, NUM_CHARGERS):
+                current_assignments[k] = current_assignments[k-1]+1
+        
+    sys.exit()
+
+    """
 else:
     defines += "#define NUM_THREADS " + str(999) + "\n" +\
                "#define TOTAL_WORK " + str(0) + "\n" +\
@@ -228,18 +290,23 @@ final_chargers_np = np.zeros((NUM_RUNS, NUM_CHARGER_INTS), dtype=np.uint32)
 final_chargers_gpu = cuda.mem_alloc(final_chargers_np.nbytes)
 cuda.memcpy_htod(final_chargers_gpu, chargers_np)
 
+simulation_data_np = np.zeros((NUM_ROUNDS, NUM_CHARGER_INTS),dtype=np.uint32)
+simulation_data_gpu = cuda.mem_alloc(simulation_data_np.nbytes)
+
 if args.optimal:
     func = mod.get_function("run_brute_force")
     func(routes_gpu, stops_gpu, final_utilities_gpu, final_chargers_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
 
 else:
     func = mod.get_function("run_approximation")
-    func(routes_gpu, stops_gpu, rng_states_gpu, final_utilities_gpu, final_chargers_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
+    func(routes_gpu, stops_gpu, rng_states_gpu, final_utilities_gpu, final_chargers_gpu, simulation_data_gpu, block=(32,NUM_RUNS_PER_BLOCK,1), grid=(NUM_RUNS,1))
 
 
 cuda.memcpy_dtoh(final_utilities_np, final_utilities_gpu)
 
 cuda.memcpy_dtoh(final_chargers_np, final_chargers_gpu)
+
+cuda.memcpy_dtoh(simulation_data_np, simulation_data_gpu)
 
 max_utility = 0.0
 max_utility_i = -1
@@ -266,11 +333,11 @@ for index, r in enumerate(routes_np):
         sys.stdout.write("  ")
     print("\n")
 
-
 if args.optimal:
     print("Runs: %d" % (len(final_utilities_np)))
-    print("Utility Max: %f" % (max(final_utilities_np)))    
+    print("Utility Max: %f" % (max(final_utilities_np)))
 else:
+    
     print("Runs: %d" % (len(final_utilities_np)))
     print("Rounds: %d" % (NUM_ROUNDS))
     print("Utility Max: %f" % (max(final_utilities_np)))
@@ -278,3 +345,42 @@ else:
     print("Utility Avg: %f" % (np.mean(final_utilities_np)))
     print("Utility Median: %f" % (np.median(final_utilities_np)))
     print("Utility Stdev: %f" % (np.std(final_utilities_np)))
+
+
+    
+if NUM_RUNS == 1:
+    for i in range(0, NUM_STOPS):
+        temp = {}
+        temp["action_time"] = 0
+        temp["coordinates"] = []
+        temp["station_id"] = i
+        temp["coordinates"].append(stopid_to_gps[i])
+        temp["type"] = "station_create"
+        print(json.dumps(temp, sort_keys=True))
+        
+    chargers = {}
+    for round in range(0, NUM_ROUNDS):
+        for i in range(0, NUM_STOPS):
+            bit_uint = int(i/32)
+            bit_offset = i%32
+            bit_value = (simulation_data_np[round][bit_uint] >> bit_offset) & 0x1
+
+            temp = {}
+            temp["action_time"] = round
+            temp["coordinates"] = []
+            temp["coordinates"].append(stopid_to_gps[i])
+            temp["station_id"] = i
+            
+            # if the charger is not here but it was last round, we removed it
+            if bit_value == 0 and i in chargers:
+                temp["type"] = "station_off"
+                print(json.dumps(temp, sort_keys=True))
+                del chargers[i]
+            # if the charger is here but it wasn't last round, we added it
+            elif bit_value == 1 and i not in chargers:
+                temp["type"] = "station_on"
+                print(json.dumps(temp, sort_keys=True))
+                chargers[i] = 1
+            # other cases mean the station stayed the same so we don't update
+
+

@@ -133,8 +133,8 @@ extern "C" {
 				    unsigned int *stop_data,
 				    curandState_t* rand_states,
 				    float* final_utility_ret,
-				    unsigned int *stops_with_chargers_ret) {
-
+				    unsigned int *stops_with_chargers_ret,
+				    unsigned int *simulation_data_ret) {
     __shared__ unsigned int stops_with_chargers[NUM_STOPS_INTS];
     __shared__ float stops_with_chargers_utility;
     __shared__ float permutation_utilities[32];
@@ -200,6 +200,14 @@ extern "C" {
 	  printf("ERROR: annealing threshold unexpectedly over 1.0 at round %u\n", rounds);
 	}
       }
+
+#if SIMULATION > 0
+      if (threadIdx.x == 0) {
+	for (int j = 0; j < NUM_STOPS_INTS; j++) {
+	  simulation_data_ret[rounds * NUM_STOPS_INTS + j] = stops_with_chargers[j];
+	}
+      }
+#endif
     } // done with rounds
 
     // find which permutation had the best final utility and save it
@@ -241,7 +249,7 @@ extern "C" {
 
 
   __device__ void increment_charger_list_initial(unsigned int *charger_permutation_counter,
-					 unsigned int *stops_with_chargers){
+						 unsigned int *stops_with_chargers){
 
     /*
     if (threadIdx.x == 29) {
@@ -298,12 +306,13 @@ extern "C" {
       charger_permutation_counter[j] = j;
     }
 
-    
-    unsigned long long start_offset = NUM_WORK_PER_THREAD * (threadIdx.x + blockIdx.x * blockDim.x);
+    unsigned long long start_offset = (unsigned long long)(NUM_WORK_PER_THREAD) * (unsigned long long)((threadIdx.x + blockIdx.x * blockDim.x));
+
     if (start_offset + NUM_WORK_PER_THREAD > TOTAL_WORK) {
       printf("INFO: Thread %u block %u start offset would exceed total work. Resetting\n", threadIdx.x, blockIdx.x);
       start_offset = LAST_THREAD_START_OFFSET;
     }
+
     //printf("thread %u, start offset %u\n", threadIdx.x, start_offset);
     float best_utility = 0.0f;
 
@@ -311,14 +320,21 @@ extern "C" {
     for (unsigned long long i = 0; i < start_offset; i++) {
       increment_charger_list_initial(charger_permutation_counter, stops_with_chargers);
     }
-    
+    /*
+    printf(" XXXX thread %u first %llu [%u][%u][%u][%u][%u][%u][%u]\n", (threadIdx.x + blockIdx.x * blockDim.x), start_offset, charger_permutation_counter[0],charger_permutation_counter[1],
+	   charger_permutation_counter[2],
+	   charger_permutation_counter[3],
+	   charger_permutation_counter[4],
+	   charger_permutation_counter[5],
+	   charger_permutation_counter[6]);
+    */
     for (int i = 0; i < NUM_CHARGERS; i++) {
       if (charger_permutation_counter[i] > NUM_STOPS) {
 	printf("ERROR, got charger ID %u with max %u for thread %u at i %u\n", charger_permutation_counter[i], NUM_STOPS, threadIdx.x, i);
       }
       stops_with_chargers[(int)charger_permutation_counter[i]/32] |= (0x1<<((int)charger_permutation_counter[i]%32));
     }
-
+    
     for (int i = 0; i < NUM_WORK_PER_THREAD; i++) {
       // calculate_utility assumes we have a charging station move pending
       // but here we don't, so we fake one by saying we moved a station from
